@@ -1,0 +1,6 @@
+# Set mock env vars for testing in hook
+export NEXT_PUBLIC_SUPABASE_URL="https://mock.supabase.co"
+export NEXT_PUBLIC_SUPABASE_ANON_KEY="mock-anon-key"
+export SUPABASE_SERVICE_ROLE_KEY="mock-service-role-key"
+
+npm test
