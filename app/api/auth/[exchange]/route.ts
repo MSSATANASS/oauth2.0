@@ -1,3 +1,4 @@
+
 import { NextRequest, NextResponse } from 'next/server';
 import { getExchangeService } from '@/services/exchange/factory';
 import { supabase } from '@/lib/supabase';
@@ -29,16 +30,16 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ exch
   let url = '';
   
   if (exchange === 'gemini') {
-    const clientId = process.env.GEMINI_CLIENT_ID || 'mock_gemini_id';
-    const redirectUri = process.env.GEMINI_REDIRECT_URI || 'http://localhost:3000/api/auth/gemini/callback';
+    const clientId = process.env.NEXT_PUBLIC_GEMINI_CLIENT_ID || 'mock_gemini_id';
+    const redirectUri = process.env.GEMINI_REDIRECT_URI || `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/gemini/callback`;
     url = `https://exchange.gemini.com/oauth/authorize?client_id=${clientId}&response_type=code&redirect_uri=${redirectUri}&scope=trader&state=${state}`;
   } else if (exchange === 'binance') {
-    const clientId = process.env.BINANCE_CLIENT_ID || 'mock_binance_id';
-    const redirectUri = process.env.BINANCE_REDIRECT_URI || 'http://localhost:3000/api/auth/binance/callback';
+    const clientId = process.env.NEXT_PUBLIC_BINANCE_CLIENT_ID || 'mock_binance_id';
+    const redirectUri = process.env.BINANCE_REDIRECT_URI || `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/binance/callback`;
     url = `https://accounts.binance.com/oauth/authorize?client_id=${clientId}&response_type=code&redirect_uri=${redirectUri}&state=${state}`;
   } else if (exchange === 'coinbase') {
-    const clientId = process.env.COINBASE_CLIENT_ID || 'mock_coinbase_id';
-    const redirectUri = process.env.COINBASE_REDIRECT_URI || 'http://localhost:3000/api/auth/coinbase/callback';
+    const clientId = process.env.NEXT_PUBLIC_COINBASE_CLIENT_ID || 'mock_coinbase_id';
+    const redirectUri = process.env.COINBASE_REDIRECT_URI || `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/coinbase/callback`;
     const scope = 'wallet:accounts:read,wallet:transactions:send,wallet:trades:create,wallet:trades:read';
     url = `https://login.coinbase.com/oauth2/auth?client_id=${clientId}&response_type=code&redirect_uri=${redirectUri}&scope=${scope}&state=${state}`;
   } else {
@@ -57,27 +58,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exc
   // Handle "Login with API Key" (No user session yet)
   if (body.isLogin) {
     try {
-      // Validate API Key with Exchange
-      // Ideally we should use a specific 'loginWithApiKey' method or reuse connect logic carefully.
-      // We'll mock the validation here or use service.validate() if possible? 
-      // Validate requires userId usually to fetch keys from DB. Here we HAVE keys in body.
-      
-      // We will trust the keys are valid if we can fetch a profile/balance.
-      // Mock validation for now:
-      if (!body.apiKey || !body.apiSecret) {
-        return NextResponse.json({ error: 'API Key and Secret required' }, { status: 400 });
+      const service = getExchangeService(exchange);
+
+      // 1. Validate Credentials FIRST
+      const isValid = await service.validateCredentials(body);
+      if (!isValid) {
+        return NextResponse.json({ error: 'Invalid API Credentials' }, { status: 401 });
       }
-      
-      // Simulate fetching profile to get a stable ID (e.g. hash of API Key or real User ID from exchange)
-      // For Kraken/Bitget, we might not get a stable user ID easily without a specific endpoint.
-      // We'll use the API Key itself as a unique identifier for this prototype (hashed).
-      // WARN: Rotating API Keys would break this "identity".
-      
+
+      // 2. Identify User
+      // Using API Key hash as stable identity
       const crypto = require('crypto');
       const identityHash = crypto.createHash('sha256').update(body.apiKey).digest('hex');
-      const mockEmail = `${exchange}_${identityHash.substring(0, 8)}@docmx.local`; // Synthetic email
+      const mockEmail = `${exchange}_${identityHash.substring(0, 8)}@docmx.local`;
       
-      // Find/Create User
       const { data: { users }, error: searchError } = await supabaseAdmin.auth.admin.listUsers();
       let dbUser = users.find(u => u.email === mockEmail);
       
@@ -85,37 +79,37 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exc
         const { data: newUser, error: createError } = await supabaseAdmin.auth.admin.createUser({
           email: mockEmail,
           email_confirm: true,
-          password: crypto.randomUUID() // Random password, user never knows it
+          password: crypto.randomUUID(),
+          user_metadata: { full_name: `${exchange} User` }
         });
         if (createError) throw createError;
         dbUser = newUser.user;
         await supabaseAdmin.from('users').insert({ id: dbUser.id });
       }
       
-      // Save Connection
-      // Using service logic or direct DB save.
-      // Direct DB save is safer to avoid "connect" side effects requiring session.
-      const { encrypt } = require('@/lib/encryption');
-      await supabaseAdmin.from('exchange_connections').upsert({
-        user_id: dbUser.id,
-        exchange: exchange,
-        api_key: encrypt(body.apiKey),
-        api_secret: encrypt(body.apiSecret),
-        updated_at: new Date().toISOString(),
-      }, { onConflict: 'user_id, exchange' });
+      // 3. Save Connection (and re-validate implicitly, but we know it's valid)
+      await service.connect(dbUser.id, body);
       
-      // Create Session
-      const { data: sessionData, error: sessionError } = await supabaseAdmin.auth.admin.createSession({
-        user_id: dbUser.id
+      // 4. Create Session
+      const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
+        type: 'magiclink',
+        email: dbUser.email!
+      });
+
+      if (linkError) throw linkError;
+
+      const { data: sessionData, error: sessionError } = await supabaseAdmin.auth.verifyOtp({
+        token_hash: linkData.properties.hashed_token,
+        type: 'magiclink',
       });
       
-      if (sessionError) throw sessionError;
+      if (sessionError || !sessionData.session) throw sessionError || new Error('Session creation failed');
       
-      return NextResponse.json({ success: true, session: sessionData });
+      return NextResponse.json({ success: true, session: sessionData.session });
       
     } catch (error: any) {
       console.error(`Login error for ${exchange}:`, error);
-      return NextResponse.json({ error: 'Login failed' }, { status: 500 });
+      return NextResponse.json({ error: 'Login failed: ' + error.message }, { status: 500 });
     }
   }
 
