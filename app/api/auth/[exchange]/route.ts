@@ -1,4 +1,3 @@
-
 import { NextRequest, NextResponse } from 'next/server';
 import { getExchangeService } from '@/services/exchange/factory';
 import { supabase } from '@/lib/supabase';
@@ -91,21 +90,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ exc
       await service.connect(dbUser.id, body);
       
       // 4. Create Session
-      const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
-        type: 'magiclink',
-        email: dbUser.email!
-      });
-
-      if (linkError) throw linkError;
-
-      const { data: sessionData, error: sessionError } = await supabaseAdmin.auth.verifyOtp({
-        token_hash: linkData.properties.hashed_token,
-        type: 'magiclink',
+      const { data: sessionData, error: sessionError } = await supabaseAdmin.auth.admin.createSession({
+        user_id: dbUser.id
       });
       
-      if (sessionError || !sessionData.session) throw sessionError || new Error('Session creation failed');
+      if (sessionError) throw sessionError;
       
-      return NextResponse.json({ success: true, session: sessionData.session });
+      return NextResponse.json({ success: true, session: sessionData });
       
     } catch (error: any) {
       console.error(`Login error for ${exchange}:`, error);

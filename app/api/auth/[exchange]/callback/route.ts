@@ -1,4 +1,3 @@
-
 import { NextRequest, NextResponse } from 'next/server';
 import { getExchangeService } from '@/services/exchange/factory';
 import { decrypt } from '@/lib/encryption';
@@ -74,24 +73,16 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ exch
     await service.saveConnection(user.id, accessToken, refreshToken, null, null, expiresAt);
     
     // 5. Create Session (if logging in)
-    const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
-      type: 'magiclink',
-      email: user.email!
-    });
-
-    if (linkError) throw linkError;
-
-    const { data: sessionData, error: sessionError } = await supabaseAdmin.auth.verifyOtp({
-      token_hash: linkData.properties.hashed_token,
-      type: 'magiclink',
+    const { data: sessionData, error: sessionError } = await supabaseAdmin.auth.admin.createSession({
+      user_id: user.id
     });
     
-    if (sessionError || !sessionData.session) throw sessionError || new Error('Session creation failed');
+    if (sessionError) throw sessionError;
     
     // 6. Redirect
     const redirectUrl = new URL('/dashboard', req.url);
-    redirectUrl.searchParams.set('access_token', sessionData.session.access_token);
-    redirectUrl.searchParams.set('refresh_token', sessionData.session.refresh_token);
+    redirectUrl.searchParams.set('access_token', sessionData.access_token);
+    redirectUrl.searchParams.set('refresh_token', sessionData.refresh_token);
     
     return NextResponse.redirect(redirectUrl);
     
